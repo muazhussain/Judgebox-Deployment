@@ -1,0 +1,84 @@
+# NestJS Backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nestjs-backend
+  namespace: judgebox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nestjs-backend
+  template:
+    metadata:
+      labels:
+        app: nestjs-backend
+    spec:
+      containers:
+      - name: nestjs-backend
+        image: muazhussain/judgebox-backend:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)"
+        - name: MONGODB_URL
+          value: "mongodb://$(MONGODB_USER):$(MONGODB_PASSWORD)@mongodb:27017/$(MONGODB_DB)"
+        - name: REDIS_URL
+          value: "redis://$(REDIS_HOST):$(REDIS_PORT)"
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nestjs-service
+  namespace: judgebox
+spec:
+  selector:
+    app: nestjs-backend
+  ports:
+  - port: 80
+    targetPort: 3000
+    nodePort: 30000
+  type: NodePort
+--- 
+
+# Flask Judge
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-judge
+  namespace: judgebox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flask-judge
+  template:
+    metadata:
+      labels:
+        app: flask-judge
+    spec:
+      containers:
+      - name: flask-judge
+        image: muazhussain/online-judge-executor:latest
+        ports:
+        - containerPort: 5000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-service
+  namespace: judgebox
+spec:
+  selector:
+    app: flask-judge
+  ports:
+  - port: 80
+    targetPort: 5000
+    nodePort: 30001
+  type: NodePort
