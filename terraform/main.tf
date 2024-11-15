@@ -273,6 +273,11 @@ resource "aws_instance" "k3s" {
   vpc_security_group_ids = [aws_security_group.k3s.id]
   key_name              = var.ssh_key_name
 
+  root_block_device {
+    volume_size = 50
+    volume_type = "gp3"
+  }
+
   user_data = <<-EOF
               #!/bin/bash
               curl -sfL https://get.k3s.io | sh -
