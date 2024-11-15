@@ -1,10 +1,11 @@
 # PostgreSQL
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: postgres
   namespace: judgebox
 spec:
+  serviceName: postgres
   replicas: 1
   selector:
     matchLabels:
@@ -35,27 +36,27 @@ spec:
             secretKeyRef:
               name: app-secrets
               key: POSTGRES_PASSWORD
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: judgebox
-spec:
-  selector:
-    app: postgres
-  ports:
-  - port: 5432
-  type: ClusterIP
 
----
 # MongoDB
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: mongodb
   namespace: judgebox
 spec:
+  serviceName: mongodb
   replicas: 1
   selector:
     matchLabels:
@@ -80,33 +81,33 @@ spec:
           valueFrom:
             configMapKeyRef:
               name: app-config
-              key: POSTGRES_USER
+              key: MONGODB_USER
         - name: MONGO_INITDB_ROOT_PASSWORD
           valueFrom:
             secretKeyRef:
               name: app-secrets
               key: MONGODB_PASSWORD
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mongodb
-  namespace: judgebox
-spec:
-  selector:
-    app: mongodb
-  ports:
-  - port: 27017
-  type: ClusterIP
+        volumeMounts:
+        - name: mongo-data
+          mountPath: /data/db
+  volumeClaimTemplates:
+  - metadata:
+      name: mongo-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
 ---
 
 # Redis
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: redis
   namespace: judgebox
 spec:
+  serviceName: redis
   replicas: 1
   selector:
     matchLabels:
@@ -121,15 +122,14 @@ spec:
         image: redis:7
         ports:
         - containerPort: 6379
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-  namespace: judgebox
-spec:
-  selector:
-    app: redis
-  ports:
-  - port: 6379
-  type: ClusterIP
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 5Gi
