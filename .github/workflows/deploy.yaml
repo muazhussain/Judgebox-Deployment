@@ -1,0 +1,124 @@
+name: Deploy Infrastructure and Application
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-southeast-1
+  PROJECT_NAME: judgebox
+  TERRAFORM_VERSION: 1.5.0
+  
+jobs:
+  deploy-infrastructure:
+    runs-on: ubuntu-latest
+    outputs:
+      bastion_ip: ${{ steps.terraform-outputs.outputs.bastion_ip }}
+      k3s_ip: ${{ steps.terraform-outputs.outputs.k3s_ip }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+    - name: Create SSH key
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        echo "$SSH_PUBLIC_KEY" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa
+        chmod 644 ~/.ssh/id_rsa.pub
+
+    - name: Import SSH key to AWS
+      run: |
+        aws ec2 import-key-pair \
+          --key-name github-actions \
+          --public-key-material fileb://~/.ssh/id_rsa.pub
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    - name: Terraform Plan
+      working-directory: ./terraform
+      run: terraform plan -var="ssh_key_name=github-actions"
+
+    - name: Terraform Apply
+      working-directory: ./terraform
+      run: terraform apply -auto-approve -var="ssh_key_name=github-actions"
+
+    - name: Get Terraform Outputs
+      id: terraform-outputs
+      working-directory: ./terraform
+      run: |
+        echo "bastion_ip=$(terraform output -raw bastion_public_ip)" >> $GITHUB_OUTPUT
+        echo "k3s_ip=$(terraform output -raw k3s_private_ip)" >> $GITHUB_OUTPUT
+
+  deploy-kubernetes:
+    needs: deploy-infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup SSH
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        echo "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+    - name: Copy Manifests to Bastion
+      run: |
+        scp -o ProxyCommand="ssh -W %h:%p ubuntu@${{ needs.deploy-infrastructure.outputs.bastion_ip }}" \
+          -r ./manifests \
+          ubuntu@${{ needs.deploy-infrastructure.outputs.k3s_ip }}:~/manifests
+
+    - name: Setup kubectl on Bastion and Apply Manifests
+      run: |
+        ssh -J ubuntu@${{ needs.deploy-infrastructure.outputs.bastion_ip }} ubuntu@${{ needs.deploy-infrastructure.outputs.k3s_ip }} '
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+          # Get k3s config
+          sudo cat /etc/rancher/k3s/k3s.yaml > ~/.kube/config
+          sed -i "s/127.0.0.1/${{ needs.deploy-infrastructure.outputs.k3s_ip }}/g" ~/.kube/config
+
+          # Apply manifests
+          cd manifests
+          kubectl apply -f namespace.yaml
+          kubectl apply -f config.yaml
+          kubectl apply -f databases.yaml
+          kubectl apply -f applications.yaml
+
+          # Verify deployments
+          kubectl get pods -n judgebox
+        '
+
+    - name: Verify Deployment
+      run: |
+        ssh -J ubuntu@${{ needs.deploy-infrastructure.outputs.bastion_ip }} ubuntu@${{ needs.deploy-infrastructure.outputs.k3s_ip }} '
+          kubectl get pods -n judgebox -o wide
+          kubectl get svc -n judgebox
+        '
