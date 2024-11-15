@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: judgebox
+data:
+  nginx.conf: |
+    upstream nestjs_backend {
+        server localhost:30000;
+    }
+
+    upstream flask_judge {
+        server localhost:30001;
+    }
+
+    server {
+        listen 80;
+        server_name _;
+
+        location /api {
+            proxy_pass http://nestjs_backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+
+        location /judge {
+            proxy_pass http://flask_judge;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
