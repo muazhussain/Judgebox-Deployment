@@ -1,3 +1,8 @@
+# Provider configuration
+provider "aws" {
+  region = var.aws_region
+}
+
 # VPC
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -10,28 +15,30 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Public Subnet
+# Public Subnets
 resource "aws_subnet" "public" {
+  count                   = length(var.availability_zones)
   vpc_id                  = aws_vpc.main.id
-  cidr_block             = var.public_subnet_cidr
-  availability_zone       = "${var.aws_region}a"
+  cidr_block             = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone       = var.availability_zones[count.index]
   map_public_ip_on_launch = true
 
   tags = {
-    Name        = "${var.project_name}-public-subnet"
+    Name        = "${var.project_name}-public-subnet-${count.index + 1}"
     Environment = var.environment
   }
 }
 
-# Private Subnet
+# Private Subnets
 resource "aws_subnet" "private" {
+  count                   = length(var.availability_zones)
   vpc_id                  = aws_vpc.main.id
-  cidr_block             = var.private_subnet_cidr
-  availability_zone       = "${var.aws_region}a"
+  cidr_block             = cidrsubnet(var.vpc_cidr, 8, count.index + length(var.availability_zones))
+  availability_zone       = var.availability_zones[count.index]
   map_public_ip_on_launch = false
 
   tags = {
-    Name        = "${var.project_name}-private-subnet"
+    Name        = "${var.project_name}-private-subnet-${count.index + 1}"
     Environment = var.environment
   }
 }
@@ -46,27 +53,21 @@ resource "aws_internet_gateway" "main" {
   }
 }
 
-# Elastic IP for NAT Gateway
+# NAT Gateway
 resource "aws_eip" "nat" {
+  count  = length(var.availability_zones)
   domain = "vpc"
-  
-  tags = {
-    Name        = "${var.project_name}-nat-eip"
-    Environment = var.environment
-  }
 }
 
-# NAT Gateway
 resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public.id
+  count         = length(var.availability_zones)
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
 
   tags = {
-    Name        = "${var.project_name}-nat"
+    Name        = "${var.project_name}-nat-${count.index + 1}"
     Environment = var.environment
   }
-
-  depends_on = [aws_internet_gateway.main]
 }
 
 # Route Tables
@@ -85,112 +86,72 @@ resource "aws_route_table" "public" {
 }
 
 resource "aws_route_table" "private" {
+  count  = length(var.availability_zones)
   vpc_id = aws_vpc.main.id
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main.id
+    nat_gateway_id = aws_nat_gateway.main[count.index].id
   }
 
   tags = {
-    Name        = "${var.project_name}-private-rt"
+    Name        = "${var.project_name}-private-rt-${count.index + 1}"
     Environment = var.environment
   }
 }
 
 # Route Table Associations
 resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
+  count          = length(var.availability_zones)
+  subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
 
 resource "aws_route_table_association" "private" {
-  subnet_id      = aws_subnet.private.id
-  route_table_id = aws_route_table.private.id
+  count          = length(var.availability_zones)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[count.index].id
 }
 
 # Security Groups
-resource "aws_security_group" "bastion" {
-  name        = "${var.project_name}-bastion-sg"
-  description = "Security group for Bastion Host"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = var.ssh_allowed_ips
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name        = "${var.project_name}-bastion-sg"
-    Environment = var.environment
-  }
-}
-
-resource "aws_security_group" "nginx" {
-  name        = "${var.project_name}-nginx-sg"
-  description = "Security group for Nginx load balancer"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port       = 22
-    to_port         = 22
-    protocol        = "tcp"
-    security_groups = [aws_security_group.bastion.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name        = "${var.project_name}-nginx-sg"
-    Environment = var.environment
-  }
-}
-
 resource "aws_security_group" "k3s" {
   name        = "${var.project_name}-k3s-sg"
   description = "Security group for K3s cluster"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 30000
-    to_port         = 30001
-    protocol        = "tcp"
-    security_groups = [aws_security_group.nginx.id]
+    from_port = 6443
+    to_port   = 6443
+    protocol  = "tcp"
+    self      = true
   }
 
   ingress {
-    from_port       = 22
-    to_port         = 22
-    protocol        = "tcp"
-    security_groups = [aws_security_group.bastion.id]
+    from_port = 10250
+    to_port   = 10250
+    protocol  = "tcp"
+    self      = true
+  }
+
+  ingress {
+    from_port = 2379
+    to_port   = 2380
+    protocol  = "tcp"
+    self      = true
+  }
+
+  ingress {
+    from_port = 8472
+    to_port   = 8472
+    protocol  = "udp"
+    self      = true
+  }
+
+  ingress {
+    from_port = 30000
+    to_port   = 32767
+    protocol  = "tcp"
+    self      = true
   }
 
   egress {
@@ -206,72 +167,19 @@ resource "aws_security_group" "k3s" {
   }
 }
 
-# EC2 Instances
-resource "aws_instance" "bastion" {
-  ami                    = "ami-0261755bbcb8c4a84"  # Ubuntu 20.04 LTS
-  instance_type          = var.instance_types["bastion"]
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.bastion.id]
-  key_name              = var.ssh_key_name
-
-  tags = {
-    Name        = "${var.project_name}-bastion"
-    Environment = var.environment
-  }
+# K3s Cluster
+resource "random_password" "k3s_token" {
+  length  = 32
+  special = false
 }
 
-resource "aws_instance" "nginx" {
-  ami                    = "ami-0261755bbcb8c4a84"  # Ubuntu 20.04 LTS
-  instance_type          = var.instance_types["nginx"]
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.nginx.id]
-  key_name              = var.ssh_key_name
-
-  user_data = <<-EOF
-              #!/bin/bash
-              apt-get update
-              apt-get install -y nginx
-              cat > /etc/nginx/conf.d/judgebox.conf <<'EOL'
-              upstream nestjs_backend {
-                  server ${aws_instance.k3s.private_ip}:30000;
-              }
-
-              upstream flask_judge {
-                  server ${aws_instance.k3s.private_ip}:30001;
-              }
-
-              server {
-                  listen 80;
-                  server_name _;
-
-                  location /api {
-                      proxy_pass http://nestjs_backend;
-                      proxy_set_header Host $host;
-                      proxy_set_header X-Real-IP $remote_addr;
-                  }
-
-                  location /judge {
-                      proxy_pass http://flask_judge;
-                      proxy_set_header Host $host;
-                      proxy_set_header X-Real-IP $remote_addr;
-                  }
-              }
-              EOL
-              systemctl restart nginx
-              EOF
-
-  tags = {
-    Name        = "${var.project_name}-nginx"
-    Environment = var.environment
-  }
-}
-
-resource "aws_instance" "k3s" {
-  ami                    = "ami-0261755bbcb8c4a84"  # Ubuntu 20.04 LTS
-  instance_type          = var.instance_types["k3s"]
-  subnet_id              = aws_subnet.private.id
+resource "aws_instance" "k3s_master" {
+  ami                    = var.ami_id
+  instance_type          = var.instance_types["k3s_master"]
+  subnet_id              = aws_subnet.private[0].id
   vpc_security_group_ids = [aws_security_group.k3s.id]
   key_name              = var.ssh_key_name
+  iam_instance_profile  = aws_iam_instance_profile.k3s.name
 
   root_block_device {
     volume_size = 50
@@ -280,11 +188,74 @@ resource "aws_instance" "k3s" {
 
   user_data = <<-EOF
               #!/bin/bash
-              curl -sfL https://get.k3s.io | sh -
+              curl -sfL https://get.k3s.io | K3S_TOKEN=${random_password.k3s_token.result} sh -s - server \
+                --cluster-init \
+                --disable traefik \
+                --node-taint CriticalAddonsOnly=true:NoSchedule \
+                --node-label node-role=master \
+                --node-label topology.kubernetes.io/zone=${var.availability_zones[0]}
               EOF
 
   tags = {
-    Name        = "${var.project_name}-k3s"
+    Name        = "${var.project_name}-k3s-master"
     Environment = var.environment
+    Role        = "master"
   }
+}
+
+resource "aws_instance" "k3s_workers" {
+  count                  = var.worker_count
+  ami                    = var.ami_id
+  instance_type          = var.instance_types["k3s_worker"]
+  subnet_id              = aws_subnet.private[count.index % length(var.availability_zones)].id
+  vpc_security_group_ids = [aws_security_group.k3s.id]
+  key_name              = var.ssh_key_name
+  iam_instance_profile  = aws_iam_instance_profile.k3s.name
+
+  root_block_device {
+    volume_size = 50
+    volume_type = "gp3"
+  }
+
+  user_data = <<-EOF
+              #!/bin/bash
+              curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.k3s_master.private_ip}:6443 K3S_TOKEN=${random_password.k3s_token.result} sh -s - \
+                --node-label node-role=worker \
+                --node-label topology.kubernetes.io/zone=${var.availability_zones[count.index % length(var.availability_zones)]} \
+                --node-label workload-type=${count.index < var.worker_count/2 ? "app" : "db"}
+              EOF
+
+  tags = {
+    Name        = "${var.project_name}-k3s-worker-${count.index + 1}"
+    Environment = var.environment
+    Role        = "worker"
+    WorkloadType = count.index < var.worker_count/2 ? "app" : "db"
+  }
+}
+
+# IAM Role for K3s
+resource "aws_iam_role" "k3s" {
+  name = "${var.project_name}-k3s-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_instance_profile" "k3s" {
+  name = "${var.project_name}-k3s-profile"
+  role = aws_iam_role.k3s.name
+}
+
+# Allow EBS CSI Driver
+resource "aws_iam_role_policy_attachment" "k3s_ebs" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  role       = aws_iam_role.k3s.name
 }

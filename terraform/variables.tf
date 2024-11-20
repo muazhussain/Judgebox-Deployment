@@ -22,35 +22,34 @@ variable "vpc_cidr" {
   default     = "10.0.0.0/16"
 }
 
-variable "public_subnet_cidr" {
-  description = "Public Subnet CIDR"
-  type        = string
-  default     = "10.0.1.0/24"
+variable "availability_zones" {
+  description = "List of availability zones"
+  type        = list(string)
+  default     = ["ap-southeast-1a", "ap-southeast-1b"]
 }
 
-variable "private_subnet_cidr" {
-  description = "Private Subnet CIDR"
+variable "ami_id" {
+  description = "AMI ID for instances"
   type        = string
-  default     = "10.0.2.0/24"
-}
-
-variable "ssh_key_name" {
-  description = "Name of AWS key pair for SSH access"
-  type        = string
+  default     = "ami-0261755bbcb8c4a84"
 }
 
 variable "instance_types" {
   description = "Instance types for different servers"
   type        = map(string)
   default = {
-    bastion = "t2.micro"
-    nginx   = "t2.micro"
-    k3s     = "t2.medium"
+    k3s_master = "t3.medium"
+    k3s_worker = "t3.medium"
   }
 }
 
-variable "ssh_allowed_ips" {
-  description = "List of IPs allowed to SSH to bastion"
-  type        = list(string)
-  default     = ["0.0.0.0/0"]
+variable "worker_count" {
+  description = "Number of K3s worker nodes"
+  type        = number
+  default     = 2
+}
+
+variable "ssh_key_name" {
+  description = "Name of AWS key pair for SSH access"
+  type        = string
 }
