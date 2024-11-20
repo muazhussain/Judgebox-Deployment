@@ -1,129 +1,177 @@
 # JudgeBox Deployment
 
-This repository manages the infrastructure and deployment of the JudgeBox platform using Terraform for infrastructure provisioning and Kubernetes for application deployment.
+This repository manages the infrastructure and deployment of the JudgeBox platform using Terraform for infrastructure provisioning and Kubernetes for application deployment with high availability across multiple availability zones.
 
 ## Architecture Overview
 
-The infrastructure consists of:
-- VPC with public and private subnets
-- Bastion host for secure access
-- NGINX load balancer
-- K3s (lightweight Kubernetes) cluster
-- NAT Gateway for private subnet internet access
+### Infrastructure Components
+- Multi-AZ VPC with public and private subnets
+- NAT Gateways for private subnet internet access
+- K3s Kubernetes cluster with dedicated nodes for applications and databases
+- EBS CSI driver for persistent storage
+- IAM roles for K3s node management
+
+### Application Architecture
+- Distributed workloads across multiple nodes
+- High availability through pod anti-affinity
+- Zero-downtime deployments with rolling updates
+- Persistent storage for databases using EBS volumes
+- Health monitoring and automatic recovery
 
 ## Repository Structure
 ```
 judgebox-deployment/
-├── .github/
-│   └── workflows/
-│       ├── deploy.yaml     # Deployment workflow
-│       └── destroy.yaml    # Infrastructure cleanup workflow
-├── manifests/
-│   ├── applications.yaml   # Application deployments
-│   ├── config.yaml        # ConfigMaps and Secrets
-│   ├── databases.yaml     # Database deployments
-│   ├── namespace.yaml     # Kubernetes namespace
-│   └── nginx-config.yaml  # NGINX configuration
 ├── terraform/
-│   ├── main.tf           # Main infrastructure
+│   ├── main.tf           # Infrastructure configuration
 │   ├── variables.tf      # Variable definitions
 │   ├── outputs.tf        # Output definitions
 │   └── versions.tf       # Provider versions
+├── manifests/
+│   ├── namespace.yaml    # Kubernetes namespace
+│   ├── storage/
+│   │   └── storage-class.yaml  # EBS storage configuration
+│   ├── config/
+│   │   ├── configmap.yaml      # Application configs
+│   │   └── secrets.yaml        # Sensitive data
+│   ├── databases/
+│   │   └── databases.yaml      # Database StatefulSets
+│   ├── applications/
+│   │   └── applications.yaml   # Application Deployments
+│   └── ingress/
+│       └── nginx-config.yaml   # NGINX configuration
+├── .github/
+│   └── workflows/
+│       ├── deploy.yaml     # Deployment workflow
+│       └── destroy.yaml    # Cleanup workflow
 └── README.md
 ```
 
-## Infrastructure Components
+## Infrastructure Details
 
 ### AWS Resources
 - **VPC**: `10.0.0.0/16`
-  - Public Subnet: `10.0.1.0/24`
-  - Private Subnet: `10.0.2.0/24`
+  - Public Subnets in multiple AZs
+  - Private Subnets in multiple AZs
+  - NAT Gateways for outbound internet access
+  - Internet Gateway for public access
 
-### EC2 Instances
-- **Bastion Host**: t2.micro in public subnet
-- **NGINX Load Balancer**: t2.micro in public subnet
-- **K3s Server**: t2.medium in private subnet
+### Kubernetes Cluster
+- **Master Node**: t3.medium in private subnet
+- **Worker Nodes**: t3.medium in private subnets
+  - Application nodes: Dedicated for NestJS and Flask services
+  - Database nodes: Dedicated for stateful workloads
 
-### Security Groups
-- Bastion: Allow SSH from specified IPs
-- NGINX: Allow HTTP/HTTPS from anywhere
-- K3s: Allow traffic from NGINX and Bastion
+### Node Affinity Rules
+- Applications run on nodes labeled `workload-type=app`
+- Databases run on nodes labeled `workload-type=db`
+- Pod anti-affinity ensures high availability
 
-## Kubernetes Components
+## Application Components
 
-### Applications
-- NestJS Backend: Port 30000
-- Flask Judge Service: Port 30001
+### Services
+- **NestJS Backend**
+  - Replicas: 3
+  - NodePort: 30000
+  - Rolling updates enabled
+  - Resource limits and health checks
 
-### Databases
-- PostgreSQL
-- MongoDB
-- Redis
+- **Flask Judge Service**
+  - Replicas: 3
+  - NodePort: 30001
+  - Rolling updates enabled
+  - Resource limits and health checks
 
-## Deployment Process
+### Databases (StatefulSets)
+- **PostgreSQL**
+  - Persistent storage: 10Gi EBS
+  - Anti-affinity rules
+  - Resource limits
+
+- **MongoDB**
+  - Persistent storage: 10Gi EBS
+  - Anti-affinity rules
+  - Resource limits
+
+- **Redis**
+  - Persistent storage: 5Gi EBS
+  - Anti-affinity rules
+  - Resource limits
+
+## Deployment Guide
 
 ### Prerequisites
-1. AWS Account with proper permissions
-2. GitHub repository secrets configured:
-   ```
-   AWS_ACCESS_KEY_ID
-   AWS_SECRET_ACCESS_KEY
-   SSH_PRIVATE_KEY
-   SSH_PUBLIC_KEY
-   KNOWN_HOSTS
-   ```
-
-### Deployment Steps
-
-1. **Infrastructure Deployment**:
-   ```bash
-   # Triggered via GitHub Actions
-   # Manual trigger: Navigate to Actions → Deploy Infrastructure and Application → Run workflow
-   ```
-
-2. **Application Deployment**:
-   ```bash
-   # Automatically runs after infrastructure deployment
-   # Deploys Kubernetes manifests in this order:
-   # 1. Namespace
-   # 2. ConfigMaps and Secrets
-   # 3. Databases
-   # 4. Applications
-   ```
-
-### Destroying Infrastructure
-```bash
-# Navigate to Actions → Destroy Infrastructure → Run workflow
+1. AWS Account with necessary permissions
+2. GitHub repository with these secrets:
+```
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+SSH_PRIVATE_KEY
+SSH_PUBLIC_KEY
+KNOWN_HOSTS
 ```
 
-## Security Considerations
+### Initial Setup
+1. Generate SSH keys:
+```bash
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/judgebox
+```
 
-1. **Network Security**:
-   - Private subnet for sensitive components
-   - Bastion host for secure access
-   - Security groups with minimum required access
+2. Configure GitHub secrets:
+   - Copy private key to SSH_PRIVATE_KEY
+   - Copy public key to SSH_PUBLIC_KEY
+   - Generate KNOWN_HOSTS after first deployment
 
-2. **Access Control**:
-   - SSH access only through bastion
-   - NGINX as reverse proxy
-   - Kubernetes RBAC enabled
+### Deployment Process
+1. **Infrastructure Deployment**:
+```bash
+# Via GitHub Actions
+Navigate to Actions → Deploy Infrastructure and Application → Run workflow
+```
 
-3. **Secrets Management**:
-   - Sensitive data stored in Kubernetes secrets
-   - GitHub secrets for credentials
-   - No hardcoded credentials
+2. **Verify Deployment**:
+```bash
+# Check node status
+kubectl get nodes -o wide
 
-### Logs
+# Check pod distribution
+kubectl get pods -n judgebox -o wide
+
+# Verify storage
+kubectl get pv,pvc -n judgebox
+```
+
+### Monitoring and Logs
 ```bash
 # Application logs
-kubectl logs -n judgebox deployment/nestjs-backend
-kubectl logs -n judgebox deployment/flask-judge
+kubectl logs -n judgebox -l app=nestjs-backend
+kubectl logs -n judgebox -l app=flask-judge
 
 # Database logs
-kubectl logs -n judgebox deployment/postgres
-kubectl logs -n judgebox deployment/mongodb
-kubectl logs -n judgebox deployment/redis
+kubectl logs -n judgebox -l app=postgres
+kubectl logs -n judgebox -l app=mongodb
+kubectl logs -n judgebox -l app=redis
 ```
+
+### Cleanup
+```bash
+# Via GitHub Actions
+Navigate to Actions → Destroy Infrastructure → Run workflow
+```
+
+## Security
+
+### Network Security
+- All nodes in private subnets
+- Internet access through NAT Gateways
+- Security groups with minimal required access
+- SSH access only through bastion host
+
+### Data Security
+- EBS volumes encrypted at rest
+- Secrets managed through Kubernetes secrets
+- Node-to-node encryption enabled
+- IAM roles for service accounts
+
 ## License
 
 This project is licensed under the MIT License.
