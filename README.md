@@ -2,7 +2,15 @@
 
 This repository manages the infrastructure and deployment of the JudgeBox platform using Terraform for infrastructure provisioning and Kubernetes for application deployment with high availability across multiple availability zones.
 
+## Related Repositories
+- [Judgebox-Backend (NestJS)](https://github.com/muazhussain/Judgebox-Backend) - Main application service
+- [Judgebox-Judge (Flask)](https://github.com/muazhussain/Judgebox-Judge) - Code execution service
+
 ## Architecture Overview
+
+![JudgeBox Architecture](Judgebox-diagram.png)
+
+The above diagram demonstrates the request flow in multi-node Kubernetes cluster.
 
 ### Infrastructure Components
 - Multi-AZ VPC with public and private subnets
