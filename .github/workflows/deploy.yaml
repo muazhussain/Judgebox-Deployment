@@ -73,15 +73,15 @@ jobs:
       run: |
         MASTER_IP=$(terraform output -raw k3s_master_private_ip || echo "")
         WORKER_IP=$(terraform output -raw k3s_worker_private_ip || echo "")
-        echo "master_ip=$MASTER_IP" >> "$GITHUB_OUTPUT"
-        echo "worker_ip=$WORKER_IP" >> "$GITHUB_OUTPUT"
+        echo "master_ip=$MASTER_IP" >> $GITHUB_OUTPUT
+        echo "worker_ip=$WORKER_IP" >> $GITHUB_OUTPUT
 
     - name: Get Token
       id: get-token
       working-directory: ./terraform
       run: |
         TOKEN=$(terraform output -raw k3s_token || echo "")
-        echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+        echo "token=$TOKEN" >> $GITHUB_OUTPUT
 
   deploy-kubernetes:
     needs: deploy-infrastructure
