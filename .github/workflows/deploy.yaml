@@ -93,6 +93,18 @@ jobs:
         chmod 600 ~/.ssh/id_rsa
         echo "$KNOWN_HOSTS" > ~/.ssh/known_hosts
 
+    - name: Wait for K3s Setup
+      run: |
+        # Wait for k3s to be ready on master node (retry for 5 minutes)
+        for i in {1..30}; do
+          if ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} 'sudo systemctl is-active k3s'; then
+            echo "K3s is ready!"
+            break
+          fi
+          echo "Waiting for K3s to be ready... (attempt $i/30)"
+          sleep 10
+        done
+
     - name: Copy Manifests and Setup Master Node
       run: |
         ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
@@ -108,10 +120,26 @@ jobs:
           sudo cat /etc/rancher/k3s/k3s.yaml > ~/.kube/config
           sudo chown ubuntu:ubuntu ~/.kube/config
           sed -i "s/127.0.0.1/${{ needs.deploy-infrastructure.outputs.master_ip }}/g" ~/.kube/config
+
+          # Wait for nodes to be ready
+          kubectl wait --for=condition=ready node --all --timeout=300s
+
+          # Install AWS EBS CSI Driver with compatibility settings
+          kubectl apply -k "github.com/kubernetes-sigs/aws-ebs-csi-driver/deploy/kubernetes/overlays/stable/?ref=master"
         '
 
         # Copy manifests
         scp -r ./manifests/* ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }}:/opt/judgebox/manifests/
+
+    - name: Wait for Core Components
+      run: |
+        ssh ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
+          # Wait for EBS CSI driver to be ready
+          kubectl rollout status deployment ebs-csi-controller -n kube-system --timeout=300s
+
+          # Verify node labels
+          kubectl get nodes --show-labels
+        '
 
     - name: Apply Kubernetes Manifests
       run: |
@@ -119,20 +147,63 @@ jobs:
           cd /opt/judgebox/manifests
 
           kubectl apply -f namespace.yaml
+          kubectl wait --for=condition=Active namespace/judgebox --timeout=60s
 
           kubectl apply -f storage/storage-class.yaml
+          sleep 10
 
-          kubectl apply -f config/
+          kubectl apply -f config/configmap.yaml
+          kubectl apply -f config/app-secrets.yaml
+          sleep 5
 
-          kubectl apply -f databases/
+          kubectl apply -f databases/mongodb.yaml
+          echo "Waiting for MongoDB StatefulSet..."
+          kubectl rollout status statefulset/mongodb -n judgebox --timeout=300s
 
-          kubectl apply -f applications/
+          kubectl apply -f databases/postgres.yaml
+          echo "Waiting for PostgreSQL StatefulSet..."
+          kubectl rollout status statefulset/postgres -n judgebox --timeout=300s
 
-          kubectl apply -f ingress/
+          kubectl apply -f databases/redis.yaml
+          echo "Waiting for Redis StatefulSet..."
+          kubectl rollout status statefulset/redis -n judgebox --timeout=300s
 
-          # Verify deployments
+          echo "Deploying applications..."
+          kubectl apply -f applications/nestjs.yaml
+          kubectl apply -f applications/flask.yaml
+
+          kubectl rollout status deployment/nestjs-backend -n judgebox --timeout=300s
+          kubectl rollout status deployment/flask-judge -n judgebox --timeout=300s
+
+          kubectl apply -f ingress/nginx-config.yaml
+
+          echo "Verifying deployment status..."
+          echo "Node Status:"
           kubectl get nodes -o wide
+          
+          echo "Pod Status:"
           kubectl get pods -n judgebox -o wide
+          
+          echo "PVC Status:"
           kubectl get pv,pvc -n judgebox
+          
+          echo "Service Status:"
           kubectl get svc -n judgebox
+        '
+
+    - name: Verify Final Deployment
+      run: |
+        ssh ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
+          # Final verification of all components
+          echo "Checking all pods are running:"
+          kubectl wait --for=condition=ready pod --all -n judgebox --timeout=300s
+          
+          echo "Final pod status:"
+          kubectl get pods -n judgebox -o wide
+          
+          echo "Service endpoints:"
+          kubectl get endpoints -n judgebox
+          
+          echo "Events from the last 5 minutes:"
+          kubectl get events -n judgebox --sort-by=.metadata.creationTimestamp | tail -n 20
         '

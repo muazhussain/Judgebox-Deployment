@@ -7,3 +7,6 @@ volumeBindingMode: WaitForFirstConsumer
 parameters:
   type: gp3
   encrypted: "true"
+  csi.storage.k8s.io/fstype: ext4
+  csi.storage.k8s.io/provisioner-secret-name: aws-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: kube-system
