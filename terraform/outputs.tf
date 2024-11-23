@@ -8,9 +8,9 @@ output "k3s_master_private_ip" {
   description = "Private IP of K3s master"
 }
 
-output "k3s_workers_private_ips" {
-  value       = aws_instance.k3s_workers[*].private_ip
-  description = "Private IPs of K3s workers"
+output "k3s_worker_private_ip" {
+  value       = aws_instance.k3s_worker.private_ip
+  description = "Private IP of K3s worker"
 }
 
 output "k3s_token" {
