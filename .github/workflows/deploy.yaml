@@ -48,7 +48,6 @@ jobs:
       run: |
         aws ec2 delete-key-pair --key-name github-actions || true
         sleep 5
-        
         aws ec2 import-key-pair \
           --key-name github-actions \
           --public-key-material fileb://~/.ssh/id_rsa.pub || {
@@ -72,9 +71,11 @@ jobs:
       id: terraform-outputs
       working-directory: ./terraform
       run: |
-        echo "master_ip=$(terraform output -raw k3s_master_private_ip)" >> $GITHUB_OUTPUT
-        echo "worker_ip=$(terraform output -raw k3s_workers_private_ips)" >> $GITHUB_OUTPUT
-        echo "k3s_token=$(terraform output -raw k3s_token)" >> $GITHUB_OUTPUT
+        {
+          echo "master_ip=$(terraform output -raw k3s_master_private_ip)"
+          echo "worker_ip=$(terraform output -raw k3s_worker_private_ip)"
+          echo "k3s_token=$(terraform output -raw k3s_token)"
+        } >> $GITHUB_OUTPUT
 
   deploy-kubernetes:
     needs: deploy-infrastructure
@@ -95,7 +96,6 @@ jobs:
 
     - name: Wait for K3s Setup
       run: |
-        # Wait for k3s to be ready on master node (retry for 5 minutes)
         for i in {1..30}; do
           if ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} 'sudo systemctl is-active k3s'; then
             echo "K3s is ready!"
@@ -105,24 +105,16 @@ jobs:
           sleep 10
         done
 
-    - name: Copy Manifests and Setup Master Node
+    - name: Setup Master Node
       run: |
         ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
-          # Create directories
           mkdir -p ~/.kube /opt/judgebox/manifests
-
-          # Install kubectl
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
-
-          # Setup kubeconfig
           sudo cat /etc/rancher/k3s/k3s.yaml > ~/.kube/config
           sudo chown ubuntu:ubuntu ~/.kube/config
           sed -i "s/127.0.0.1/${{ needs.deploy-infrastructure.outputs.master_ip }}/g" ~/.kube/config
-
-          # Wait for nodes to be ready
-          kubectl wait --for=condition=ready node --all --timeout=300s
         '
 
         # Copy manifests
@@ -132,30 +124,13 @@ jobs:
       run: |
         ssh ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
           cd /opt/judgebox/manifests
-
           kubectl apply -f namespace.yaml
-          kubectl wait --for=condition=Active namespace/judgebox --timeout=60s
-
-          kubectl apply -f config/configmap.yaml
-          kubectl apply -f config/app-secrets.yaml
-          sleep 5
-
-          sed -i "s/replicas: 3/replicas: 1/g" applications/*.yaml
-          sed -i "s/replicas: 2/replicas: 1/g" applications/*.yaml
-
+          kubectl apply -f config/
+          kubectl apply -f storage/
           kubectl apply -f databases/
-          echo "Waiting for databases..."
-          kubectl rollout status statefulset/mongodb -n judgebox --timeout=300s
-          kubectl rollout status statefulset/postgres -n judgebox --timeout=300s
-          kubectl rollout status statefulset/redis -n judgebox --timeout=300s
-
           kubectl apply -f applications/
-          echo "Waiting for applications..."
-          kubectl rollout status deployment/nestjs-backend -n judgebox --timeout=300s
-          kubectl rollout status deployment/flask-judge -n judgebox --timeout=300s
-
-          kubectl apply -f ingress/nginx-config.yaml
-
+          kubectl apply -f ingress/
+          
           echo "Deployment Status:"
           kubectl get all -n judgebox
         '
