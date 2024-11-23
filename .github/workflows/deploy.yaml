@@ -71,6 +71,9 @@ jobs:
       id: get-ips
       working-directory: ./terraform
       run: |
+        terraform output k3s_master_private_ip
+        terraform output k3s_worker_private_ip
+
         MASTER_IP=$(terraform output -raw k3s_master_private_ip || echo "")
         WORKER_IP=$(terraform output -raw k3s_worker_private_ip || echo "")
         echo "master_ip=$MASTER_IP" >> $GITHUB_OUTPUT
