@@ -47,16 +47,14 @@ jobs:
     - name: Manage AWS Key Pair
       run: |
         aws ec2 delete-key-pair --key-name github-actions || true
+        sleep 5
         
         aws ec2 import-key-pair \
           --key-name github-actions \
-          --public-key-material fileb://~/.ssh/id_rsa.pub
-
-    - name: Import SSH key to AWS
-      run: |
-        aws ec2 import-key-pair \
-          --key-name github-actions \
-          --public-key-material fileb://~/.ssh/id_rsa.pub
+          --public-key-material fileb://~/.ssh/id_rsa.pub || {
+            echo "Failed to import key pair"
+            exit 1
+          }
 
     - name: Terraform Init
       working-directory: ./terraform
