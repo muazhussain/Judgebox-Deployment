@@ -31,22 +31,22 @@ variable "availability_zones" {
 variable "ami_id" {
   description = "AMI ID for instances"
   type        = string
-  default     = "ami-078c1149d8ad719a7"
+  default     = "ami-047126e50991d067b"
 }
 
 variable "instance_types" {
   description = "Instance types for different servers"
   type        = map(string)
   default = {
-    k3s_master = "t2.small"
-    k3s_worker = "t2.small"
+    k3s_master = "t2.micro"
+    k3s_worker = "t2.micro"
   }
 }
 
 variable "worker_count" {
   description = "Number of K3s worker nodes"
   type        = number
-  default     = 1  # Changed to single worker
+  default     = 1
 }
 
 variable "ssh_key_name" {
