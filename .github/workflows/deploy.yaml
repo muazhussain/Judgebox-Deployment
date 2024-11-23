@@ -44,6 +44,14 @@ jobs:
         chmod 600 ~/.ssh/id_rsa
         chmod 644 ~/.ssh/id_rsa.pub
 
+    - name: Manage AWS Key Pair
+      run: |
+        aws ec2 delete-key-pair --key-name github-actions || true
+        
+        aws ec2 import-key-pair \
+          --key-name github-actions \
+          --public-key-material fileb://~/.ssh/id_rsa.pub
+
     - name: Import SSH key to AWS
       run: |
         aws ec2 import-key-pair \
