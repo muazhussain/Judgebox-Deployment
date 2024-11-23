@@ -87,6 +87,10 @@ jobs:
     steps:
     - uses: actions/checkout@v3
 
+    - name: Debug Connection Info
+      run: |
+        echo "Will connect to master IP: ${{ needs.deploy-infrastructure.outputs.master_ip }}"
+
     - name: Setup SSH
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
