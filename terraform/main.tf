@@ -1,4 +1,3 @@
-# Provider configuration
 provider "aws" {
   region = var.aws_region
 }
@@ -119,6 +118,7 @@ resource "aws_security_group" "k3s" {
   description = "Security group for K3s cluster"
   vpc_id      = aws_vpc.main.id
 
+  # K3s API Server
   ingress {
     from_port = 6443
     to_port   = 6443
@@ -126,6 +126,7 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
+  # Kubelet
   ingress {
     from_port = 10250
     to_port   = 10250
@@ -133,6 +134,7 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
+  # ETCD
   ingress {
     from_port = 2379
     to_port   = 2380
@@ -140,6 +142,7 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
+  # Flannel VXLAN
   ingress {
     from_port = 8472
     to_port   = 8472
@@ -147,6 +150,7 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
+  # NodePort range
   ingress {
     from_port = 30000
     to_port   = 32767
@@ -154,6 +158,15 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
+  # SSH access
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Allow all outbound
   egress {
     from_port   = 0
     to_port     = 0
@@ -167,19 +180,19 @@ resource "aws_security_group" "k3s" {
   }
 }
 
-# K3s Cluster
+# K3s Cluster Token
 resource "random_password" "k3s_token" {
   length  = 32
   special = false
 }
 
+# K3s Master Node
 resource "aws_instance" "k3s_master" {
   ami                    = var.ami_id
   instance_type          = var.instance_types["k3s_master"]
   subnet_id              = aws_subnet.private[0].id
   vpc_security_group_ids = [aws_security_group.k3s.id]
   key_name              = var.ssh_key_name
-  iam_instance_profile  = aws_iam_instance_profile.k3s.name
 
   root_block_device {
     volume_size = 50
@@ -193,7 +206,8 @@ resource "aws_instance" "k3s_master" {
                 --disable traefik \
                 --node-taint CriticalAddonsOnly=true:NoSchedule \
                 --node-label node-role=master \
-                --node-label topology.kubernetes.io/zone=${var.availability_zones[0]}
+                --node-label topology.kubernetes.io/zone=${var.availability_zones[0]} \
+                --kubelet-arg="cloud-provider=external"
               EOF
 
   tags = {
@@ -203,6 +217,7 @@ resource "aws_instance" "k3s_master" {
   }
 }
 
+# K3s Worker Nodes
 resource "aws_instance" "k3s_workers" {
   count                  = var.worker_count
   ami                    = var.ami_id
@@ -210,7 +225,6 @@ resource "aws_instance" "k3s_workers" {
   subnet_id              = aws_subnet.private[count.index % length(var.availability_zones)].id
   vpc_security_group_ids = [aws_security_group.k3s.id]
   key_name              = var.ssh_key_name
-  iam_instance_profile  = aws_iam_instance_profile.k3s.name
 
   root_block_device {
     volume_size = 50
@@ -222,40 +236,14 @@ resource "aws_instance" "k3s_workers" {
               curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.k3s_master.private_ip}:6443 K3S_TOKEN=${random_password.k3s_token.result} sh -s - \
                 --node-label node-role=worker \
                 --node-label topology.kubernetes.io/zone=${var.availability_zones[count.index % length(var.availability_zones)]} \
-                --node-label workload-type=${count.index < var.worker_count/2 ? "app" : "db"}
+                --node-label workload-type=${count.index < var.worker_count/2 ? "app" : "db"} \
+                --kubelet-arg="cloud-provider=external"
               EOF
 
   tags = {
-    Name        = "${var.project_name}-k3s-worker-${count.index + 1}"
-    Environment = var.environment
-    Role        = "worker"
+    Name         = "${var.project_name}-k3s-worker-${count.index + 1}"
+    Environment  = var.environment
+    Role         = "worker"
     WorkloadType = count.index < var.worker_count/2 ? "app" : "db"
   }
-}
-
-# IAM Role for K3s
-resource "aws_iam_role" "k3s" {
-  name = "${var.project_name}-k3s-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
-    }]
-  })
-}
-
-resource "aws_iam_instance_profile" "k3s" {
-  name = "${var.project_name}-k3s-profile"
-  role = aws_iam_role.k3s.name
-}
-
-# Allow EBS CSI Driver
-resource "aws_iam_role_policy_attachment" "k3s_ebs" {
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-  role       = aws_iam_role.k3s.name
 }

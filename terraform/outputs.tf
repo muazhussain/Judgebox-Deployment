@@ -18,8 +18,3 @@ output "k3s_token" {
   description = "K3s cluster token"
   sensitive   = true
 }
-
-output "kubeconfig_command" {
-  value       = "sudo cat /etc/rancher/k3s/k3s.yaml"
-  description = "Command to get kubeconfig"
-}
