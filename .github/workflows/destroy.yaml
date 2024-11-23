@@ -41,11 +41,14 @@ jobs:
       working-directory: ./terraform
       run: terraform init
 
-    - name: Clean EBS Volumes
+    - name: Clean Up Resources
       working-directory: ./terraform
       run: |
         master_ip=$(terraform output -raw k3s_master_private_ip)
-        ssh ubuntu@$master_ip 'kubectl delete pvc --all -n judgebox'
+        ssh -o StrictHostKeyChecking=no ubuntu@$master_ip '
+          kubectl delete namespace judgebox --timeout=5m || true
+          kubectl delete pvc --all -n judgebox || true
+        '
 
     - name: Terraform Destroy
       working-directory: ./terraform

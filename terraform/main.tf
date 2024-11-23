@@ -14,7 +14,7 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Public Subnets
+# Public Subnet
 resource "aws_subnet" "public" {
   count                   = length(var.availability_zones)
   vpc_id                  = aws_vpc.main.id
@@ -28,7 +28,7 @@ resource "aws_subnet" "public" {
   }
 }
 
-# Private Subnets
+# Private Subnet
 resource "aws_subnet" "private" {
   count                   = length(var.availability_zones)
   vpc_id                  = aws_vpc.main.id
@@ -118,7 +118,6 @@ resource "aws_security_group" "k3s" {
   description = "Security group for K3s cluster"
   vpc_id      = aws_vpc.main.id
 
-  # K3s API Server
   ingress {
     from_port = 6443
     to_port   = 6443
@@ -126,7 +125,6 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
-  # Kubelet
   ingress {
     from_port = 10250
     to_port   = 10250
@@ -134,7 +132,6 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
-  # ETCD
   ingress {
     from_port = 2379
     to_port   = 2380
@@ -142,7 +139,6 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
-  # Flannel VXLAN
   ingress {
     from_port = 8472
     to_port   = 8472
@@ -150,7 +146,6 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
-  # NodePort range
   ingress {
     from_port = 30000
     to_port   = 32767
@@ -158,7 +153,6 @@ resource "aws_security_group" "k3s" {
     self      = true
   }
 
-  # SSH access
   ingress {
     from_port   = 22
     to_port     = 22
@@ -166,7 +160,6 @@ resource "aws_security_group" "k3s" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Allow all outbound
   egress {
     from_port   = 0
     to_port     = 0
@@ -195,7 +188,7 @@ resource "aws_instance" "k3s_master" {
   key_name              = var.ssh_key_name
 
   root_block_device {
-    volume_size = 50
+    volume_size = 20
     volume_type = "gp3"
   }
 
@@ -204,10 +197,8 @@ resource "aws_instance" "k3s_master" {
               curl -sfL https://get.k3s.io | K3S_TOKEN=${random_password.k3s_token.result} sh -s - server \
                 --cluster-init \
                 --disable traefik \
-                --node-taint CriticalAddonsOnly=true:NoSchedule \
                 --node-label node-role=master \
-                --node-label topology.kubernetes.io/zone=${var.availability_zones[0]} \
-                --kubelet-arg="cloud-provider=external"
+                --node-label topology.kubernetes.io/zone=${var.availability_zones[0]}
               EOF
 
   tags = {
@@ -227,7 +218,7 @@ resource "aws_instance" "k3s_workers" {
   key_name              = var.ssh_key_name
 
   root_block_device {
-    volume_size = 50
+    volume_size = 20
     volume_type = "gp3"
   }
 
@@ -235,15 +226,13 @@ resource "aws_instance" "k3s_workers" {
               #!/bin/bash
               curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.k3s_master.private_ip}:6443 K3S_TOKEN=${random_password.k3s_token.result} sh -s - \
                 --node-label node-role=worker \
-                --node-label topology.kubernetes.io/zone=${var.availability_zones[count.index % length(var.availability_zones)]} \
-                --node-label workload-type=${count.index < var.worker_count/2 ? "app" : "db"} \
-                --kubelet-arg="cloud-provider=external"
+                --node-label topology.kubernetes.io/zone=${var.availability_zones[0]} \
+                --node-label workload-type=all
               EOF
 
   tags = {
-    Name         = "${var.project_name}-k3s-worker-${count.index + 1}"
-    Environment  = var.environment
-    Role         = "worker"
-    WorkloadType = count.index < var.worker_count/2 ? "app" : "db"
+    Name        = "${var.project_name}-k3s-worker-${count.index + 1}"
+    Environment = var.environment
+    Role        = "worker"
   }
 }
