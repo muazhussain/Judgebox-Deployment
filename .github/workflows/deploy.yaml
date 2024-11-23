@@ -70,6 +70,7 @@ jobs:
     - name: Get IPs
       id: get-ips
       working-directory: ./terraform
+      shell: bash
       run: |
         terraform output k3s_master_private_ip
         terraform output k3s_worker_private_ip
@@ -82,6 +83,7 @@ jobs:
     - name: Get Token
       id: get-token
       working-directory: ./terraform
+      shell: bash
       run: |
         TOKEN=$(terraform output -raw k3s_token || echo "")
         echo "token=$TOKEN" >> $GITHUB_OUTPUT
