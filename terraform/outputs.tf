@@ -1,8 +1,3 @@
-output "vpc_id" {
-  value       = aws_vpc.main.id
-  description = "VPC ID"
-}
-
 output "k3s_master_private_ip" {
   value       = aws_instance.k3s_master.private_ip
   description = "Private IP of K3s master"
