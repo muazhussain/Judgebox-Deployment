@@ -1,4 +1,4 @@
-name: Deploy Infrastructure and Application
+name: Deploy Infrastructure
 
 on:
   push:
@@ -33,6 +33,9 @@ jobs:
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
 
+    - name: Install jq
+      run: sudo apt-get update && sudo apt-get install -y jq
+
     - name: Create SSH key
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -44,11 +47,16 @@ jobs:
         chmod 600 ~/.ssh/id_rsa
         chmod 644 ~/.ssh/id_rsa.pub
 
-    - name: Import SSH key to AWS
+    - name: Manage AWS Key Pair
       run: |
+        aws ec2 delete-key-pair --key-name github-actions || true
+        sleep 5
         aws ec2 import-key-pair \
           --key-name github-actions \
-          --public-key-material fileb://~/.ssh/id_rsa.pub
+          --public-key-material fileb://~/.ssh/id_rsa.pub || {
+            echo "Failed to import key pair"
+            exit 1
+          }
 
     - name: Terraform Init
       working-directory: ./terraform
@@ -65,10 +73,15 @@ jobs:
     - name: Get Terraform Outputs
       id: terraform-outputs
       working-directory: ./terraform
+      shell: bash
       run: |
-        echo "master_ip=$(terraform output -raw k3s_master_private_ip)" >> $GITHUB_OUTPUT
-        echo "worker_ips=$(terraform output -raw k3s_workers_private_ips)" >> $GITHUB_OUTPUT
-        echo "k3s_token=$(terraform output -raw k3s_token)" >> $GITHUB_OUTPUT
+        # Export terraform outputs to JSON
+        terraform output -json > tf_outputs.json
+        
+        # Read values using jq and save to GITHUB_OUTPUT
+        echo "master_ip=$(jq -r '.k3s_master_private_ip.value' tf_outputs.json)" >> "$GITHUB_OUTPUT"
+        echo "worker_ips=$(jq -r '.k3s_workers_private_ips.value' tf_outputs.json)" >> "$GITHUB_OUTPUT"
+        echo "k3s_token=$(jq -r '.k3s_token.value' tf_outputs.json)" >> "$GITHUB_OUTPUT"
 
   deploy-kubernetes:
     needs: deploy-infrastructure
@@ -80,53 +93,55 @@ jobs:
     - name: Setup SSH
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
       run: |
         mkdir -p ~/.ssh
         echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        echo "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+        echo "StrictHostKeyChecking no" >> ~/.ssh/config
 
-    - name: Copy Manifests and Setup Master Node
+    - name: Wait for K3s Installation
       run: |
-        ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
-          # Create directories
-          mkdir -p ~/.kube /opt/judgebox/manifests
+        echo "Waiting for K3s to be ready on master node..."
+        sleep 60
+
+    - name: Setup and Verify Cluster
+      run: |
+        ssh ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
+          # Wait for k3s to be ready
+          while ! sudo test -f /etc/rancher/k3s/k3s.yaml; do
+            echo "Waiting for k3s.yaml..."
+            sleep 5
+          done
+
+          # Setup kubectl
+          mkdir -p ~/.kube
+          sudo cat /etc/rancher/k3s/k3s.yaml > ~/.kube/config
+          sudo chown ubuntu:ubuntu ~/.kube/config
+          sed -i "s/127.0.0.1/${{ needs.deploy-infrastructure.outputs.master_ip }}/g" ~/.kube/config
 
           # Install kubectl
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
 
-          # Setup kubeconfig
-          sudo cat /etc/rancher/k3s/k3s.yaml > ~/.kube/config
-          sudo chown ubuntu:ubuntu ~/.kube/config
-          sed -i "s/127.0.0.1/${{ needs.deploy-infrastructure.outputs.master_ip }}/g" ~/.kube/config
-        '
-
-        # Copy manifests
-        scp -r ./manifests/* ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }}:/opt/judgebox/manifests/
-
-    - name: Apply Kubernetes Manifests
-      run: |
-        ssh ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
-          cd /opt/judgebox/manifests
-
-          kubectl apply -f namespace.yaml
-
-          kubectl apply -f storage/storage-class.yaml
-
-          kubectl apply -f config/
-
-          kubectl apply -f databases/
-
-          kubectl apply -f applications/
-
-          kubectl apply -f ingress/
-
-          # Verify deployments
+          # Check cluster status
+          echo "Checking cluster nodes..."
           kubectl get nodes -o wide
-          kubectl get pods -n judgebox -o wide
-          kubectl get pv,pvc -n judgebox
-          kubectl get svc -n judgebox
+          
+          echo "Checking cluster pods..."
+          kubectl get pods -A
+
+          # Wait for worker nodes to be ready
+          echo "Waiting for all nodes to be ready..."
+          kubectl wait --for=condition=ready node --all --timeout=300s || {
+            echo "Not all nodes are ready after timeout"
+            exit 1
+          }
+
+          # Verify all system pods are running
+          echo "Verifying system pods..."
+          kubectl wait --for=condition=ready pods --all -n kube-system --timeout=300s || {
+            echo "Not all system pods are ready after timeout"
+            exit 1
+          }
         '
