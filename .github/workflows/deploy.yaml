@@ -1,4 +1,4 @@
-name: Deploy Infrastructure and Application
+name: Deploy Infrastructure
 
 on:
   push:
@@ -32,6 +32,9 @@ jobs:
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+    - name: Install jq
+      run: sudo apt-get update && sudo apt-get install -y jq
 
     - name: Create SSH key
       env:
@@ -77,7 +80,7 @@ jobs:
         
         # Read values using jq and save to GITHUB_OUTPUT
         echo "master_ip=$(jq -r '.k3s_master_private_ip.value' tf_outputs.json)" >> "$GITHUB_OUTPUT"
-        echo "worker_ip=$(jq -r '.k3s_worker_private_ip.value' tf_outputs.json)" >> "$GITHUB_OUTPUT"
+        echo "worker_ips=$(jq -r '.k3s_workers_private_ips.value' tf_outputs.json)" >> "$GITHUB_OUTPUT"
         echo "k3s_token=$(jq -r '.k3s_token.value' tf_outputs.json)" >> "$GITHUB_OUTPUT"
 
   deploy-kubernetes:
@@ -94,49 +97,55 @@ jobs:
     - name: Setup SSH
       env:
         SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
       run: |
         mkdir -p ~/.ssh
         echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        echo "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+        echo "StrictHostKeyChecking no" >> ~/.ssh/config
 
-    - name: Wait for K3s Setup
+    - name: Wait for K3s Installation
       run: |
-        for i in {1..30}; do
-          if ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} 'sudo systemctl is-active k3s'; then
-            echo "K3s is ready!"
-            break
-          fi
-          echo "Waiting for K3s to be ready... (attempt $i/30)"
-          sleep 10
-        done
+        echo "Waiting for K3s to be ready on master node..."
+        sleep 60
 
-    - name: Setup Master Node
+    - name: Setup and Verify Cluster
       run: |
-        ssh -o StrictHostKeyChecking=no ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
-          mkdir -p ~/.kube /opt/judgebox/manifests
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
+        ssh ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
+          # Wait for k3s to be ready
+          while ! sudo test -f /etc/rancher/k3s/k3s.yaml; do
+            echo "Waiting for k3s.yaml..."
+            sleep 5
+          done
+
+          # Setup kubectl
+          mkdir -p ~/.kube
           sudo cat /etc/rancher/k3s/k3s.yaml > ~/.kube/config
           sudo chown ubuntu:ubuntu ~/.kube/config
           sed -i "s/127.0.0.1/${{ needs.deploy-infrastructure.outputs.master_ip }}/g" ~/.kube/config
-        '
 
-        scp -r ./manifests/* ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }}:/opt/judgebox/manifests/
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
 
-    - name: Apply Kubernetes Manifests
-      run: |
-        ssh ubuntu@${{ needs.deploy-infrastructure.outputs.master_ip }} '
-          cd /opt/judgebox/manifests
-          kubectl apply -f namespace.yaml
-          kubectl apply -f config/
-          kubectl apply -f storage/
-          kubectl apply -f databases/
-          kubectl apply -f applications/
-          kubectl apply -f ingress/
+          # Check cluster status
+          echo "Checking cluster nodes..."
+          kubectl get nodes -o wide
           
-          echo "Deployment Status:"
-          kubectl get all -n judgebox
+          echo "Checking cluster pods..."
+          kubectl get pods -A
+
+          # Wait for worker nodes to be ready
+          echo "Waiting for all nodes to be ready..."
+          kubectl wait --for=condition=ready node --all --timeout=300s || {
+            echo "Not all nodes are ready after timeout"
+            exit 1
+          }
+
+          # Verify all system pods are running
+          echo "Verifying system pods..."
+          kubectl wait --for=condition=ready pods --all -n kube-system --timeout=300s || {
+            echo "Not all system pods are ready after timeout"
+            exit 1
+          }
         '

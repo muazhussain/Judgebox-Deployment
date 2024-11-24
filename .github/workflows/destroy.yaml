@@ -5,6 +5,7 @@ on:
 
 env:
   AWS_REGION: ap-southeast-1
+  PROJECT_NAME: judgebox
   TERRAFORM_VERSION: 1.5.0
 
 jobs:
@@ -36,20 +37,42 @@ jobs:
         echo "$SSH_PUBLIC_KEY" > ~/.ssh/id_rsa.pub
         chmod 600 ~/.ssh/id_rsa
         chmod 644 ~/.ssh/id_rsa.pub
+        echo "StrictHostKeyChecking no" >> ~/.ssh/config
 
     - name: Terraform Init
       working-directory: ./terraform
       run: terraform init
 
-    - name: Clean Up Resources
+    - name: Clean Up Cluster Resources
       working-directory: ./terraform
+      continue-on-error: true
       run: |
-        master_ip=$(terraform output -raw k3s_master_private_ip)
-        ssh -o StrictHostKeyChecking=no ubuntu@$master_ip '
-          kubectl delete namespace judgebox --timeout=5m || true
-          kubectl delete pvc --all -n judgebox || true
-        '
+        # Get master IP
+        master_ip=$(terraform output -raw k3s_master_private_ip || echo "")
+        
+        if [ ! -z "$master_ip" ]; then
+          echo "Attempting to clean up cluster resources..."
+          ssh ubuntu@$master_ip '
+            # Check if kubectl is available
+            if command -v kubectl &> /dev/null; then
+              echo "Removing all namespaces except system namespaces..."
+              for ns in $(kubectl get namespaces -o name | grep -v "kube-system\|default\|kube-public\|kube-node-lease"); do
+                kubectl delete $ns --timeout=60s || true
+              done
+            else
+              echo "kubectl not found, skipping cleanup"
+            fi
+          '
+        else
+          echo "Master IP not found, skipping cleanup"
+        fi
 
     - name: Terraform Destroy
       working-directory: ./terraform
       run: terraform destroy -auto-approve -var="ssh_key_name=github-actions"
+
+    - name: Clean Up AWS Key Pair
+      if: always()
+      run: |
+        echo "Cleaning up AWS key pair..."
+        aws ec2 delete-key-pair --key-name github-actions || true

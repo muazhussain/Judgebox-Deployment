@@ -180,11 +180,12 @@ resource "aws_instance" "k3s_worker" {
               #!/bin/bash
               curl -sfL https://get.k3s.io | K3S_URL=https://${aws_instance.k3s_master.private_ip}:6443 K3S_TOKEN=${random_password.k3s_token.result} sh -s - \
                 --node-label node-role=worker \
-                --node-label topology.kubernetes.io/zone=${var.availability_zone} \
-                --node-label workload-type=all
+                --node-label topology.kubernetes.io/zone=${var.availability_zones[count.index % length(var.availability_zones)]}
               EOF
 
   tags = {
-    Name = "${var.project_name}-k3s-worker"
+    Name        = "${var.project_name}-k3s-worker-${count.index + 1}"
+    Environment = var.environment
+    Role        = "worker"
   }
 }
